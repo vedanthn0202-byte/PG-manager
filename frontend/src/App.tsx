@@ -3,13 +3,15 @@ import {
   Activity, ArrowDownLeft, ArrowRight, ArrowUpRight, BedDouble, Bell,
   Building2, CalendarDays, ChevronDown, ChevronRight,
   CircleHelp, ClipboardList, CreditCard, Home, LayoutDashboard,
-  Menu, MoreHorizontal, Plus, Search, Settings2, SlidersHorizontal,
+  Menu, MoreHorizontal, Plus, Settings2, SlidersHorizontal,
   Sparkles, Users, Wallet, X,
 } from 'lucide-react'
 
-type Property = { name: string; area: string; occupied: number; beds: number; revenue: number; accent: string }
+type Property = { id: number; name: string; area: string; occupied: number; beds: number; revenue: number; accent: string }
 type Owner = { id: number; full_name: string; email: string }
-type TenantRow = { name: string; initials: string; room: string; property: string; due: string; amount: string; status: string; color: string }
+type Room = { id: number; room_number: string; floor_number: number; room_type: string; capacity: number; beds: { id: number; label: string; monthly_rent: number | null; available: boolean }[] }
+type Tenant = { id: number; full_name: string; phone: string; email: string | null; emergency_contact: string | null; current_stay: { id: number; property_name: string; room_number: string; bed_label: string; check_in: string; agreed_monthly_rent: number } | null }
+type Summary = { property_count: number; room_count: number; bed_count: number; occupied_beds: number; tenant_count: number }
 type ViewName = 'Overview' | 'Properties' | 'Rooms & beds' | 'Tenants' | 'Rent & invoices' | 'Payments' | 'Expenses' | 'Reports'
 const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
@@ -31,6 +33,7 @@ const chartBars = [
 ]
 
 function money(value: number) { return `₹${new Intl.NumberFormat('en-IN').format(value)}` }
+function localToday() { const date = new Date(); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 10) }
 
 export default function App() {
   const [active, setActive] = useState<ViewName>('Overview')
@@ -44,14 +47,27 @@ export default function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [notice, setNotice] = useState('')
+  const [rooms, setRooms] = useState<Room[]>([])
+  const [tenants, setTenants] = useState<Tenant[]>([])
+  const [selectedPropertyId, setSelectedPropertyId] = useState<number | null>(null)
+  const [resourceBusy, setResourceBusy] = useState(false)
+  const [roomNumber, setRoomNumber] = useState('')
+  const [floorNumber, setFloorNumber] = useState('0')
+  const [bedLabels, setBedLabels] = useState('A, B')
+  const [tenantName, setTenantName] = useState('')
+  const [tenantPhone, setTenantPhone] = useState('')
+  const [tenantEmail, setTenantEmail] = useState('')
+  const [selectedTenantId, setSelectedTenantId] = useState<number | null>(null)
+  const [selectedBedId, setSelectedBedId] = useState<number | null>(null)
+  const [agreedRent, setAgreedRent] = useState('')
+  const [checkInDate, setCheckInDate] = useState(localToday())
+  const [summary, setSummary] = useState<Summary>({ property_count: 0, room_count: 0, bed_count: 0, occupied_beds: 0, tenant_count: 0 })
   const [modal, setModal] = useState(false)
   const [propertyName, setPropertyName] = useState('')
   const [propertyArea, setPropertyArea] = useState('')
-  const [search, setSearch] = useState('')
   const [mobileNav, setMobileNav] = useState(false)
-  const totalBeds = properties.reduce((sum, property) => sum + property.beds, 0)
-  const occupiedBeds = properties.reduce((sum, property) => sum + property.occupied, 0)
-  const filteredTenants: TenantRow[] = []
+  const totalBeds = summary.bed_count
+  const occupiedBeds = summary.occupied_beds
 
   useEffect(() => {
     fetch(`${apiBase}/api/auth/me`, { credentials: 'include' })
@@ -61,8 +77,8 @@ export default function App() {
         setOwner(currentOwner)
         const response = await fetch(`${apiBase}/api/properties`, { credentials: 'include' })
         if (response.ok) {
-          const records = await response.json() as { name: string; locality: string; city: string }[]
-          setProperties(records.map((record, index) => ({ name: record.name, area: `${record.locality}, ${record.city}`, occupied: 0, beds: 0, revenue: 0, accent: ['sage', 'peach', 'lavender'][index % 3] })))
+          const records = await response.json() as { id: number; name: string; locality: string; city: string; bed_count: number; occupied_beds: number }[]
+          setProperties(records.map((record, index) => ({ id: record.id, name: record.name, area: `${record.locality}, ${record.city}`, occupied: record.occupied_beds, beds: record.bed_count, revenue: 0, accent: ['sage', 'peach', 'lavender'][index % 3] })))
         }
       })
       .catch(() => setAuthError('Could not reach PG Connect. Make sure the API is running and try again.'))
@@ -81,8 +97,8 @@ export default function App() {
       setOwner(data as Owner)
       const propertyResponse = await fetch(`${apiBase}/api/properties`, { credentials: 'include' })
       if (propertyResponse.ok) {
-        const records = await propertyResponse.json() as { name: string; locality: string; city: string }[]
-        setProperties(records.map((record, index) => ({ name: record.name, area: `${record.locality}, ${record.city}`, occupied: 0, beds: 0, revenue: 0, accent: ['sage', 'peach', 'lavender'][index % 3] })))
+        const records = await propertyResponse.json() as { id: number; name: string; locality: string; city: string; bed_count: number; occupied_beds: number }[]
+        setProperties(records.map((record, index) => ({ id: record.id, name: record.name, area: `${record.locality}, ${record.city}`, occupied: record.occupied_beds, beds: record.bed_count, revenue: 0, accent: ['sage', 'peach', 'lavender'][index % 3] })))
       }
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not sign you in.') }
     finally { setAuthBusy(false); setLoading(false) }
@@ -93,15 +109,90 @@ export default function App() {
     setOwner(null); setProperties([]); setAuthMode('login'); setPassword('')
   }
 
+  const activePropertyId = selectedPropertyId ?? properties[0]?.id ?? null
+  useEffect(() => {
+    if (!owner) return
+    if (active === 'Overview') {
+      fetch(`${apiBase}/api/dashboard`, { credentials: 'include' })
+        .then(async (response) => { if (!response.ok) throw new Error('Could not load the dashboard.'); setSummary(await response.json() as Summary) })
+        .catch((error) => setAuthError(error instanceof Error ? error.message : 'Could not load the dashboard.'))
+      fetch(`${apiBase}/api/properties`, { credentials: 'include' })
+        .then(async (response) => { if (!response.ok) throw new Error('Could not load properties.'); const records = await response.json() as { id: number; name: string; locality: string; city: string; bed_count: number; occupied_beds: number }[]; setProperties(records.map((record, index) => ({ id: record.id, name: record.name, area: `${record.locality}, ${record.city}`, occupied: record.occupied_beds, beds: record.bed_count, revenue: 0, accent: ['sage', 'peach', 'lavender'][index % 3] }))) })
+        .catch((error) => setAuthError(error instanceof Error ? error.message : 'Could not load properties.'))
+      fetch(`${apiBase}/api/tenants`, { credentials: 'include' })
+        .then(async (response) => { if (!response.ok) throw new Error('Could not load tenants.'); setTenants(await response.json() as Tenant[]) })
+        .catch((error) => setAuthError(error instanceof Error ? error.message : 'Could not load tenants.'))
+    }
+    if (active === 'Tenants') {
+      fetch(`${apiBase}/api/tenants`, { credentials: 'include' })
+        .then(async (response) => { if (!response.ok) throw new Error('Could not load tenants.'); setTenants(await response.json() as Tenant[]) })
+        .catch((error) => setAuthError(error instanceof Error ? error.message : 'Could not load tenants.'))
+    }
+    if ((active === 'Rooms & beds' || active === 'Tenants') && activePropertyId !== null) {
+      fetch(`${apiBase}/api/properties/${activePropertyId}/rooms`, { credentials: 'include' })
+        .then(async (response) => { if (!response.ok) throw new Error('Could not load rooms.'); setRooms(await response.json() as Room[]) })
+        .catch((error) => setAuthError(error instanceof Error ? error.message : 'Could not load rooms.'))
+    }
+  }, [active, activePropertyId, owner])
+
   async function addProperty(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     try {
       const response = await fetch(`${apiBase}/api/properties`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: propertyName, locality: propertyArea }) })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail ?? 'Could not add property.')
-      setProperties([...properties, { name: data.name, area: `${data.locality}, ${data.city}`, occupied: 0, beds: 0, revenue: 0, accent: 'blue' }])
+      setProperties([...properties, { id: data.id, name: data.name, area: `${data.locality}, ${data.city}`, occupied: 0, beds: 0, revenue: 0, accent: 'blue' }])
       setPropertyName(''); setPropertyArea(''); setModal(false); setActive('Properties'); setNotice('Property added successfully.'); window.setTimeout(() => setNotice(''), 3500)
     } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not add property.') }
+  }
+
+  async function addRoom(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setResourceBusy(true); setAuthError('')
+    try {
+      if (activePropertyId === null) throw new Error('Add a property before creating rooms.')
+      const response = await fetch(`${apiBase}/api/properties/${activePropertyId}/rooms`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_number: roomNumber, floor_number: Number(floorNumber), bed_labels: bedLabels.split(',').map((label) => label.trim()).filter(Boolean) }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail ?? 'Could not add room.')
+      setRooms([...rooms, data as Room]); setProperties(properties.map((property) => property.id === activePropertyId ? { ...property, beds: property.beds + data.beds.length } : property)); setRoomNumber(''); setModal(false); setNotice('Room and beds added successfully.'); window.setTimeout(() => setNotice(''), 3500)
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not add room.') }
+    finally { setResourceBusy(false) }
+  }
+
+  async function addTenant(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setResourceBusy(true); setAuthError('')
+    try {
+      const response = await fetch(`${apiBase}/api/tenants`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ full_name: tenantName, phone: tenantPhone, email: tenantEmail || null }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail ?? 'Could not add tenant.')
+      setTenants([...tenants, data as Tenant]); setSummary({ ...summary, tenant_count: summary.tenant_count + 1 }); setTenantName(''); setTenantPhone(''); setTenantEmail(''); setModal(false); setNotice('Tenant added successfully.'); window.setTimeout(() => setNotice(''), 3500)
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not add tenant.') }
+    finally { setResourceBusy(false) }
+  }
+
+  async function checkInTenant(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setResourceBusy(true); setAuthError('')
+    try {
+      if (selectedTenantId === null || selectedBedId === null) throw new Error('Choose an available bed.')
+      const response = await fetch(`${apiBase}/api/stays`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tenant_id: selectedTenantId, bed_id: selectedBedId, check_in: checkInDate, agreed_monthly_rent: Number(agreedRent) }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail ?? 'Could not check in tenant.')
+      const tenantResponse = await fetch(`${apiBase}/api/tenants`, { credentials: 'include' })
+      if (tenantResponse.ok) setTenants(await tenantResponse.json() as Tenant[])
+      setSelectedTenantId(null); setSelectedBedId(null); setAgreedRent(''); setModal(false); setNotice('Tenant checked in successfully.'); window.setTimeout(() => setNotice(''), 3500)
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not check in tenant.') }
+    finally { setResourceBusy(false) }
+  }
+
+  async function checkOutTenant(stayId: number) {
+    setAuthError('')
+    try {
+      const response = await fetch(`${apiBase}/api/stays/${stayId}/checkout`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ check_out: localToday() }) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail ?? 'Could not check out tenant.')
+      const tenantResponse = await fetch(`${apiBase}/api/tenants`, { credentials: 'include' })
+      if (tenantResponse.ok) setTenants(await tenantResponse.json() as Tenant[])
+      setNotice('Tenant checked out successfully.'); window.setTimeout(() => setNotice(''), 3500)
+    } catch (error) { setAuthError(error instanceof Error ? error.message : 'Could not check out tenant.') }
   }
 
   if (loading) return <div className="auth-screen"><div className="auth-card auth-loading"><div className="brand-mark"><Home size={17} /></div><span>Opening your workspace…</span></div></div>
@@ -125,20 +216,21 @@ export default function App() {
             <StatCard title="Monthly collections" value="₹0" delta="No invoices" note="billing is not set up yet" icon={<Wallet size={18} />} tint="mint" trend="neutral" />
             <StatCard title="Occupancy rate" value={`${totalBeds ? Math.round(occupiedBeds / totalBeds * 100) : 0}%`} delta={`${totalBeds} beds`} note="add rooms to track capacity" icon={<BedDouble size={18} />} tint="blue-tint" trend="neutral" extra={<div className="mini-progress"><i style={{ width: `${totalBeds ? occupiedBeds / totalBeds * 100 : 0}%` }} /></div>} />
             <StatCard title="Rent to collect" value="₹0" delta="No invoices" note="billing is not set up yet" icon={<ArrowDownLeft size={18} />} tint="peach-tint" trend="neutral" />
-            <StatCard title="Total tenants" value={String(occupiedBeds)} delta="No tenants" note="tenant records are not set up yet" icon={<Users size={18} />} tint="lilac-tint" trend="neutral" />
+            <StatCard title="Total tenants" value={String(summary.tenant_count)} delta="Registered" note="tenant profiles" icon={<Users size={18} />} tint="lilac-tint" trend="neutral" />
           </section>
           <section className="content-grid">
             <div className="panel chart-panel"><div className="panel-heading"><div><div className="panel-kicker">YOUR BUSINESS</div><h2>Income overview</h2></div><button className="select-button">Last 6 months <ChevronDown size={14} /></button></div><div className="chart-legend"><span><i className="legend-income" /> Income</span><span><i className="legend-expense" /> Expenses</span><strong>₹0 <small>no collections recorded yet</small></strong></div><div className="chart-wrap"><div className="chart-y"><span>₹5L</span><span>₹4L</span><span>₹3L</span><span>₹2L</span><span>₹1L</span></div><div className="chart-area"><div className="chart-grid-lines"><i /><i /><i /><i /><i /></div><div className="bars">{chartBars.map((bar) => <div className="bar-group" key={bar.month}><div className="bar-pair"><i className="income-bar" style={{ height: `${bar.income}%` }} /><i className="expense-bar" style={{ height: `${bar.expense}%` }} /></div><small>{bar.month}</small></div>)}</div></div></div><div className="chart-footnote"><span className="chart-foot-icon"><ArrowUpRight size={14} /></span> Collection totals will appear here once payments are recorded.</div></div>
             <div className="panel attention-panel"><div className="panel-heading"><div><div className="panel-kicker">NEEDS ATTENTION</div><h2>Rent collection</h2></div><button className="more-button" aria-label="More options"><MoreHorizontal size={20} /></button></div><div className="collection-summary"><div className="collection-total">₹0 <span>pending</span></div><div className="collection-sub">No invoices have been created yet</div><div className="collection-track"><i style={{ width: 0 }} /></div><div className="collection-meta"><span>₹0 collected</span><b>0%</b></div></div><div className="attention-list collection-empty">Create invoices to see which rents need attention.</div><button className="text-action" onClick={() => setActive('Rent & invoices')}>View invoices <ArrowRight size={14} /></button></div>
           </section>
           <section className="panel properties-panel"><div className="panel-heading"><div><div className="panel-kicker">YOUR PORTFOLIO <span className="count-chip">{properties.length}</span></div><h2>Properties</h2></div><div className="heading-actions"><button className="outline-button" onClick={() => setActive('Properties')}>View all properties <ArrowRight size={14} /></button><button className="square-button" aria-label="Add property" onClick={() => setModal(true)}><Plus size={17} /></button></div></div><div className="property-cards">{properties.slice(0, 3).map((property, index) => <PropertyCard key={`${property.name}-${index}`} property={property} />)}</div></section>
-          <section className="panel tenants-panel"><div className="panel-heading"><div><div className="panel-kicker">RECENT ACTIVITY</div><h2>Rent due soon</h2></div><div className="heading-actions"><label className="search-box"><Search size={15} /><input placeholder="Search tenants" value={search} onChange={(event) => setSearch(event.target.value)} /></label><button className="outline-button" onClick={() => setActive('Tenants')}>All tenants <ArrowRight size={14} /></button></div></div><div className="table-scroll"><table><thead><tr><th>TENANT</th><th>PROPERTY</th><th>DUE DATE</th><th>AMOUNT</th><th>STATUS</th><th /></tr></thead><tbody>{filteredTenants.map((tenant) => <tr key={tenant.name}><td><div className="tenant-name"><span className={`tenant-avatar ${tenant.color}`}>{tenant.initials}</span><span><b>{tenant.name}</b><small>{tenant.room}</small></span></div></td><td>{tenant.property}</td><td>{tenant.due}</td><td className="amount-cell">{tenant.amount}</td><td><span className={`status-pill ${tenant.status === 'Overdue' ? 'overdue' : tenant.status === 'Due today' ? 'due' : 'upcoming'}`}><i />{tenant.status}</span></td><td><button className="row-menu" aria-label={`More options for ${tenant.name}`}><MoreHorizontal size={18} /></button></td></tr>)}</tbody></table>{filteredTenants.length === 0 && <div className="empty-search">No tenant records yet. Add tenants when tenant management is available.</div>}</div><div className="table-footer"><span>Showing <b>{filteredTenants.length}</b> of <b>0</b> tenants</span><button className="text-action" onClick={() => setActive('Tenants')}>View all tenants <ArrowRight size={14} /></button></div></section>
+          <TenantsPreview tenants={tenants} onView={() => setActive('Tenants')} />
           <footer className="footer"><span>© 2026 PG Connect</span><span>Made for the people who make a place feel like home <span className="footer-heart">♥</span></span><button>Privacy & terms</button></footer>
-        </> : <OtherView active={active} properties={properties} onAdd={() => setModal(true)} />}
+        </> : active === 'Rooms & beds' ? <RoomsView properties={properties} rooms={rooms} selectedPropertyId={activePropertyId} onSelectProperty={setSelectedPropertyId} onAdd={() => setModal(true)} /> : active === 'Tenants' ? <TenantsView tenants={tenants} onAdd={() => { setSelectedTenantId(null); setModal(true) }} onCheckin={(tenant) => { setSelectedTenantId(tenant.id); setSelectedBedId(null); setModal(true) }} onCheckout={checkOutTenant} /> : <OtherView active={active} properties={properties} onAdd={() => setModal(true)} />}
       </div>
       {(notice || authError) && <div className={`toast ${authError ? 'toast-error' : ''}`} role="status">{authError || notice}<button aria-label="Dismiss message" onClick={() => { setNotice(''); setAuthError('') }}><X size={14} /></button></div>}
     </main>
-    {modal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(false) }}><form className="modal-card" onSubmit={addProperty}><div className="modal-title-row"><div className="modal-symbol"><Building2 size={19} /></div><button type="button" className="icon-button" aria-label="Close" onClick={() => setModal(false)}><X size={18} /></button></div><h2>Add a property</h2><p>Start by adding one of your PG locations. You can set up its rooms and beds next.</p><label>Property name<input required autoFocus value={propertyName} onChange={(event) => setPropertyName(event.target.value)} placeholder="e.g. Indiranagar House" /></label><label>Area or locality<input required value={propertyArea} onChange={(event) => setPropertyArea(event.target.value)} placeholder="e.g. Indiranagar, Bengaluru" /></label><div className="modal-actions"><button className="outline-button" type="button" onClick={() => setModal(false)}>Cancel</button><button className="button-primary" type="submit"><Plus size={16} /> Add property</button></div></form></div>}
+    {modal && selectedTenantId !== null && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setModal(false); setSelectedTenantId(null) } }}><form className="modal-card" onSubmit={checkInTenant}><div className="modal-title-row"><div className="modal-symbol"><BedDouble size={19} /></div><button type="button" className="icon-button" aria-label="Close" onClick={() => { setModal(false); setSelectedTenantId(null) }}><X size={18} /></button></div><h2>Check in tenant</h2><p>Choose an available bed and record the agreed rent for this stay.</p><label>Property<select required value={activePropertyId ?? ''} onChange={(event) => setSelectedPropertyId(Number(event.target.value) || null)}>{properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></label><label>Available bed<select required value={selectedBedId ?? ''} onChange={(event) => setSelectedBedId(Number(event.target.value) || null)}><option value="">Select a bed</option>{rooms.flatMap((room) => room.beds.filter((bed) => bed.available).map((bed) => <option key={bed.id} value={bed.id}>Room {room.room_number} · Bed {bed.label}</option>))}</select></label><label>Check-in date<input required type="date" value={checkInDate} onChange={(event) => setCheckInDate(event.target.value)} /></label><label>Agreed monthly rent<input required type="number" min="0" step="0.01" value={agreedRent} onChange={(event) => setAgreedRent(event.target.value)} placeholder="₹ amount" /></label><div className="modal-actions"><button className="outline-button" type="button" onClick={() => { setModal(false); setSelectedTenantId(null) }}>Cancel</button><button className="button-primary" type="submit" disabled={resourceBusy}><Plus size={16} /> {resourceBusy ? 'Saving…' : 'Check in'}</button></div></form></div>}
+    {modal && selectedTenantId === null && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(false) }}><form className="modal-card" onSubmit={active === 'Rooms & beds' ? addRoom : active === 'Tenants' ? addTenant : addProperty}><div className="modal-title-row"><div className="modal-symbol">{active === 'Rooms & beds' ? <BedDouble size={19} /> : active === 'Tenants' ? <Users size={19} /> : <Building2 size={19} />}</div><button type="button" className="icon-button" aria-label="Close" onClick={() => setModal(false)}><X size={18} /></button></div><h2>{active === 'Rooms & beds' ? 'Add a room' : active === 'Tenants' ? 'Add a tenant' : 'Add a property'}</h2><p>{active === 'Rooms & beds' ? 'Set up a room and the individual beds available in it.' : active === 'Tenants' ? 'Add a tenant profile to your owner workspace.' : 'Start by adding one of your PG locations.'}</p>{active === 'Rooms & beds' ? <><label>Room number<input required autoFocus value={roomNumber} onChange={(event) => setRoomNumber(event.target.value)} placeholder="e.g. 204" /></label><label>Floor number<input required type="number" min="0" value={floorNumber} onChange={(event) => setFloorNumber(event.target.value)} /></label><label>Bed labels<input required value={bedLabels} onChange={(event) => setBedLabels(event.target.value)} placeholder="A, B, C" /><small className="field-help">Separate bed labels with commas.</small></label></> : active === 'Tenants' ? <><label>Full name<input required minLength={2} autoFocus value={tenantName} onChange={(event) => setTenantName(event.target.value)} placeholder="Tenant’s full name" /></label><label>Phone number<input required type="tel" value={tenantPhone} onChange={(event) => setTenantPhone(event.target.value)} placeholder="+91" /></label><label>Email address <span className="optional-label">Optional</span><input type="email" value={tenantEmail} onChange={(event) => setTenantEmail(event.target.value)} placeholder="tenant@example.com" /></label></> : <><label>Property name<input required autoFocus value={propertyName} onChange={(event) => setPropertyName(event.target.value)} placeholder="e.g. Indiranagar House" /></label><label>Area or locality<input required value={propertyArea} onChange={(event) => setPropertyArea(event.target.value)} placeholder="e.g. Indiranagar, Bengaluru" /></label></>}<div className="modal-actions"><button className="outline-button" type="button" onClick={() => setModal(false)}>Cancel</button><button className="button-primary" type="submit" disabled={resourceBusy}><Plus size={16} /> {resourceBusy ? 'Saving…' : active === 'Rooms & beds' ? 'Add room' : active === 'Tenants' ? 'Add tenant' : 'Add property'}</button></div></form></div>}
   </div>
 }
 
@@ -154,6 +246,22 @@ function PropertyCard({ property }: { property: Property }) {
   const occupancy = property.beds ? Math.round(property.occupied / property.beds * 100) : 0
   return <div className="property-card"><div className={`property-art ${property.accent}`}><div className="art-sun" /><div className="art-building"><i /><i /><i /><i /><i /><i /><i /><i /><i /></div><div className="art-ground" /></div><div className="property-card-body"><div className="property-title-row"><div><h3>{property.name}</h3><p><span className="map-pin">⌖</span>{property.area}</p></div><button className="more-button" aria-label={`More options for ${property.name}`}><MoreHorizontal size={19} /></button></div><div className="property-metrics"><div><small>OCCUPANCY</small><b>{occupancy}% <span>· {property.occupied}/{property.beds} beds</span></b><div className="property-progress"><i style={{ width: `${occupancy}%` }} /></div></div><div><small>COLLECTED THIS MONTH</small><b>{money(property.revenue)}</b></div></div></div></div>
 }
+
+function RoomsView({ properties, rooms, selectedPropertyId, onSelectProperty, onAdd }: { properties: Property[]; rooms: Room[]; selectedPropertyId: number | null; onSelectProperty: (value: number | null) => void; onAdd: () => void }) {
+  const bedCount = rooms.reduce((sum, room) => sum + room.beds.length, 0)
+  const freeCount = rooms.reduce((sum, room) => sum + room.beds.filter((bed) => bed.available).length, 0)
+  return <><section className="welcome-row subpage-welcome"><div><div className="eyebrow"><span className="live-dot" /> OWNER WORKSPACE</div><h1>Rooms & beds</h1><p className="welcome-subtitle">Keep room inventory and individual bed availability organized.</p></div><button className="button-primary" onClick={onAdd} disabled={!properties.length}><Plus size={17} /> Add room</button></section><div className="panel operational-panel"><div className="panel-heading"><div><div className="panel-kicker">ROOM INVENTORY</div><h2>{rooms.length} rooms <span className="muted-heading">· {bedCount} beds</span></h2></div><select className="select-button native-select" value={selectedPropertyId ?? ''} onChange={(event) => onSelectProperty(Number(event.target.value) || null)} aria-label="Choose property">{properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}</select></div>{!properties.length ? <div className="operational-empty"><div className="coming-icon"><Building2 size={20} /></div><h3>Add a property first</h3><p>Room and bed inventory belongs to a PG property. Add one to get started.</p></div> : !rooms.length ? <div className="operational-empty"><div className="coming-icon"><BedDouble size={20} /></div><h3>No rooms at this property yet</h3><p>Create your first room and add its bed labels. Availability is tracked one bed at a time.</p><button className="button-primary" onClick={onAdd}><Plus size={16} /> Add a room</button></div> : <div className="room-list">{rooms.map((room) => <article className="room-row" key={room.id}><div className="room-icon"><BedDouble size={17} /></div><div className="room-details"><div className="room-title"><b>Room {room.room_number}</b><span className="room-type-pill">{room.room_type}</span><small>Floor {room.floor_number}</small></div><div className="bed-chips">{room.beds.map((bed) => <span className={`bed-chip ${bed.available ? 'bed-free' : 'bed-taken'}`} key={bed.id}><i />Bed {bed.label}<small>{bed.available ? 'Available' : 'Occupied'}</small></span>)}</div></div><div className="room-count"><b>{room.beds.length}/{room.capacity}</b><small>beds</small></div></article>)}</div>}<div className="inventory-footer"><span><i className="inventory-dot available-dot" /> {freeCount} available</span><span><i className="inventory-dot occupied-dot" /> {bedCount - freeCount} occupied</span></div></div><WorkspaceFooter /></>
+}
+
+function TenantsPreview({ tenants, onView }: { tenants: Tenant[]; onView: () => void }) {
+  return <section className="panel tenants-panel"><div className="panel-heading"><div><div className="panel-kicker">PEOPLE</div><h2>Recent tenants</h2></div><button className="outline-button" onClick={onView}>All tenants <ArrowRight size={14} /></button></div>{tenants.length === 0 ? <div className="preview-empty">Tenant profiles will appear here after you add them.</div> : <div className="preview-tenant-list">{tenants.slice(0, 4).map((tenant) => <div className="preview-tenant" key={tenant.id}><span className="directory-avatar">{tenant.full_name.split(' ').map((part) => part[0]).slice(0, 2).join('').toUpperCase()}</span><span className="preview-tenant-name"><b>{tenant.full_name}</b><small>{tenant.current_stay ? `${tenant.current_stay.property_name} · Room ${tenant.current_stay.room_number}, bed ${tenant.current_stay.bed_label}` : 'Not checked in'}</small></span><span className="directory-phone">{tenant.phone}</span></div>)}</div>}<div className="table-footer"><span>Showing <b>{Math.min(tenants.length, 4)}</b> of <b>{tenants.length}</b> tenants</span><button className="text-action" onClick={onView}>View all tenants <ArrowRight size={14} /></button></div></section>
+}
+
+function TenantsView({ tenants, onAdd, onCheckin, onCheckout }: { tenants: Tenant[]; onAdd: () => void; onCheckin: (tenant: Tenant) => void; onCheckout: (stayId: number) => void }) {
+  return <><section className="welcome-row subpage-welcome"><div><div className="eyebrow"><span className="live-dot" /> OWNER WORKSPACE</div><h1>Tenants</h1><p className="welcome-subtitle">Keep tenant contact details and current stays together.</p></div><button className="button-primary" onClick={onAdd}><Plus size={17} /> Add tenant</button></section><div className="panel operational-panel"><div className="panel-heading"><div><div className="panel-kicker">TENANT DIRECTORY</div><h2>{tenants.length} {tenants.length === 1 ? 'tenant' : 'tenants'}</h2></div></div>{tenants.length === 0 ? <div className="operational-empty"><div className="coming-icon"><Users size={20} /></div><h3>No tenants yet</h3><p>Create a tenant profile to begin keeping occupancy records.</p><button className="button-primary" onClick={onAdd}><Plus size={16} /> Add a tenant</button></div> : <div className="tenant-directory">{tenants.map((tenant) => <article className="directory-row" key={tenant.id}><div className="directory-avatar">{tenant.full_name.split(' ').map((part) => part[0]).slice(0, 2).join('').toUpperCase()}</div><div className="directory-name"><b>{tenant.full_name}</b><small>{tenant.email || 'No email added'}</small></div><div className="directory-phone">{tenant.phone}</div>{tenant.current_stay ? <><div className="directory-stay"><b>{tenant.current_stay.property_name} · Room {tenant.current_stay.room_number}, bed {tenant.current_stay.bed_label}</b><small>Since {tenant.current_stay.check_in} · {money(tenant.current_stay.agreed_monthly_rent)}/month</small></div><button className="outline-button checkout-button" onClick={() => onCheckout(tenant.current_stay!.id)}>Check out</button></> : <button className="outline-button checkout-button" onClick={() => onCheckin(tenant)}>Check in</button>}</article>)}</div>}</div><WorkspaceFooter /></>
+}
+
+function WorkspaceFooter() { return <div className="footer"><span>© {new Date().getFullYear()} PG Connect</span><span>Built for better-managed stays <span className="footer-heart">♥</span></span><button>Privacy & terms</button></div> }
 
 function OtherView({ active, properties, onAdd }: { active: ViewName; properties: Property[]; onAdd: () => void }) {
   const copy: Record<ViewName, string> = { Overview: '', Properties: 'All your PG locations, at a glance.', 'Rooms & beds': 'Manage rooms, bed availability, and occupancy.', Tenants: 'Keep tenant profiles and stays organized.', 'Rent & invoices': 'Track what’s due and what’s been collected.', Payments: 'Review recent and pending transactions.', Expenses: 'Keep property operating costs in one place.', Reports: 'Understand your occupancy and business performance.' }
