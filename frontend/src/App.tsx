@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 import {
   Activity, ArrowDownLeft, ArrowRight, ArrowUpRight, BedDouble, Bell,
-  Building2, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
-  CircleHelp, ClipboardList, CreditCard, Download, Home, LayoutDashboard,
+  Building2, CalendarDays, ChevronDown, ChevronRight,
+  CircleHelp, ClipboardList, CreditCard, Home, LayoutDashboard,
   Menu, MoreHorizontal, Plus, Search, Settings2, SlidersHorizontal,
   Sparkles, Users, Wallet, X,
 } from 'lucide-react'
