@@ -1,6 +1,6 @@
 # PG Connect
 
-PG Connect is a responsive management app for Bengaluru paying guest accommodation owners. This repository starts with the owner workspace and property inventory foundation described in the development specification.
+PG Connect is a responsive management app for Bengaluru paying guest accommodation owners. The first working slice includes owner registration and sign-in, a protected owner workspace, and property creation backed by the API.
 
 ## Project layout
 
@@ -23,13 +23,17 @@ npm run dev
 
 ```powershell
 cd backend
-py -3.12 -m venv .venv
+py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-The API health endpoint is available at `http://localhost:8000/health`; interactive API documentation is at `http://localhost:8000/docs`.
+The API uses SQLite locally by default. Its health endpoint is available at `http://localhost:8000/health`; interactive API documentation is at `http://localhost:8000/docs`. PostgreSQL configuration is provided in `backend/.env.example` for the Docker database service.
+
+## Current scope
+
+Rooms and beds, tenant records, billing, payments, expenses, and reports are represented in the workspace navigation but are not implemented yet. The rent, pricing, payments, and tenant onboarding decisions in the specification remain open, so those workflows are not hard-coded prematurely.
 
 ## Product decisions
 

@@ -3,6 +3,7 @@
 !.env.example
 .venv/
 __pycache__/
+*.db
 *.py[cod]
 .pytest_cache/
 node_modules/
